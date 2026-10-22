@@ -62,7 +62,8 @@ fn craft_fonts(dir: &std::path::Path) -> Result<String, String> {
             || telugu
             || hebrew
             || scripts.split(',').any(|s| s.trim() == "Thai")
-            || devanagari;
+            || devanagari
+            || scripts.split(',').any(|s| s.trim() == "Hang");
         if wasm && !web_face {
             continue;
         }
