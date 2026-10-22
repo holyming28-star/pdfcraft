@@ -685,6 +685,99 @@ mod tests {
     use super::catalog::{Entry, parse_entries, placeholders};
     use super::*;
 
+    #[test]
+    fn korean_is_registered_and_resolves_system_locales() {
+        let ko = Lang::from_code("ko").expect("Korean is registered");
+        assert_eq!(ko.name(), "한국어");
+        for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
+            assert_eq!(lang_from_tag(tag), Some(ko), "{tag}");
+        }
+        assert_eq!(tr(ko, "Menu"), "메뉴");
+        assert_eq!(tr(ko, "Interface language"), "인터페이스 언어");
+    }
+
+    #[test]
+    fn korean_covers_ui_literals_commands_and_engine_wordings() {
+        let ko = Lang::from_code("ko").expect("Korean is registered");
+        let literals = scan_ui_literals(true);
+        assert!(literals.len() > 900);
+        let missing: Vec<_> = literals.iter().filter(|label| !has(ko, label)).collect();
+        assert!(missing.is_empty(), "untranslated Korean UI literals: {missing:#?}");
+        for command in pdfcraft_engine::commands::COMMANDS {
+            assert!(ko.catalog().id(command.id).is_some() || has(ko, command.label), "{}: {}", command.id, command.label);
+        }
+        for source in pdfcraft_engine::EDIT_LABELS.iter().chain(pdfcraft_engine::BATCH_LABELS.iter()) {
+            assert!(has(ko, source), "untranslated Korean history wording: {source}");
+        }
+        // Upstream catalogues may contain English fallback values under valid keys.
+        // These newly exposed Windows controls must have actual Korean wording.
+        assert_eq!(tr(ko, "Always use my default zoom and page layout"), "항상 내 기본 확대/축소와 페이지 배치 사용");
+        assert_eq!(tr(ko, "Calculation order"), "계산 순서");
+        assert_eq!(tr(ko, "Thumbnail size"), "축소판 크기");
+    }
+
+    #[test]
+    fn korean_keeps_counts_and_values_literal() {
+        let ko = Lang::from_code("ko").expect("Korean is registered");
+        assert_eq!(ko.0.plural_forms(), 1);
+        assert_eq!(trn(ko, 0, "{n} page", "{n} pages"), "0페이지");
+        assert_eq!(trn(ko, 2, "{n} page", "{n} pages"), "2페이지");
+        let translated = tr(ko, "Remove {name} from Recent");
+        let rendered = fmt(translated, &[("name", "도면 {n}.pdf")]);
+        assert!(rendered.contains("도면 {n}.pdf"));
+        assert!(!rendered.contains("{name}"));
+    }
+
+    #[test]
+    fn korean_catalog_glyphs_are_embedded_without_system_fonts() {
+        let ko = Lang::from_code("ko").expect("Korean is registered");
+        let faces = pdfcraft_fonts::ui_korean_fonts();
+        if faces.is_empty() {
+            assert!(
+                !pdfcraft_engine::build_info::LABEL.is_some_and(|label| label.starts_with("ko.")),
+                "Korean-labelled builds must embed a Hangul face from craft-fonts"
+            );
+            eprintln!("skipping Korean glyph check: the optional craft-fonts input has no Hang face");
+            return;
+        }
+        let (entries, errors) = parse_entries(ko.0.source, 1);
+        assert!(errors.is_empty(), "{errors:?}");
+        let labels: String =
+            entries.iter().flat_map(|entry| entry.translation.chars()).chain(ko.name().chars()).filter(|c| !c.is_control()).collect();
+        use egui::epaint::text::{Fonts, TextOptions};
+        let mut fonts = Fonts::new(TextOptions::default(), crate::theme::font_definitions());
+        for id in [egui::FontId::proportional(13.0), egui::FontId::monospace(13.0), crate::theme::medium(13.0), crate::theme::semibold(17.0)] {
+            let missing: std::collections::BTreeSet<_> = labels
+                .chars()
+                .filter(|character| !fonts.has_glyphs(&id, &character.to_string()))
+                .map(|character| format!("{character} U+{:04X}", u32::from(character)))
+                .collect();
+            assert!(missing.is_empty(), "{id:?} lacks Korean catalog glyphs: {missing:?}");
+        }
+    }
+
+    #[test]
+    fn korean_covers_all_bundled_catalog_keys() {
+        let ko = Lang::from_code("ko").expect("Korean is registered");
+        let mut missing = std::collections::BTreeSet::new();
+        for reference in LANGUAGES.iter().filter(|language| language.code != "ko") {
+            let (entries, errors) = parse_entries(reference.source, reference.plural_forms());
+            assert!(errors.is_empty(), "{}: {errors:?}", reference.code);
+            for entry in entries {
+                let translated = match entry.context.as_str() {
+                    "" => ko.catalog().plain(&entry.source),
+                    "@id" => ko.catalog().id(&entry.source),
+                    "@plural" => entry.source.split_once('|').and_then(|(one, other)| ko.catalog().plural(one, other, 0)),
+                    context => ko.catalog().contextual(context, &entry.source),
+                };
+                if translated.is_none() {
+                    missing.insert((entry.context, entry.source));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "Korean misses bundled catalog keys: {missing:#?}");
+    }
+
     const JA: fn() -> Lang = || Lang::from_code("ja").expect("ja registered");
     // These physical key-cap names remain English in several keyboard layouts. Only their
     // dedicated key context may use them unchanged; ordinary command labels still translate.
@@ -3391,7 +3484,7 @@ mod tests {
             assert_eq!(trn(ko, n, "{n} field", "{n} fields"), format!("필드 {n}개"));
         }
         // The broken-line regression: a `\n` escape stays one catalog line.
-        assert_eq!(tr(ko, "This page couldn't be displayed.\n{e}"), "이 페이지를 표시할 수 없습니다.\n{e}");
+        assert_eq!(tr(ko, "This page couldn't be displayed.\n{e}"), "이 페이지를 표시하지 못했습니다.\n{e}");
         for code in ["hi", "ko"] {
             let mut app = crate::PdfCraftApp::default();
             app.set_option("language", &code.to_uppercase()).unwrap();
@@ -3423,9 +3516,9 @@ mod tests {
         ] {
             assert!(!tr(ko, english).contains("검열"), "Korean label misstates redaction: {english}");
         }
-        assert_eq!(tr(ko, "Mark for redaction"), "제거할 영역 표시");
-        assert_eq!(tr(ko, "Apply redactions"), "표시된 정보 영구 제거");
-        assert_eq!(tr(ko, "Clear redaction marks"), "제거 대상 표시 지우기");
+        assert_eq!(tr(ko, "Mark for redaction"), "민감 정보 가리기 표시");
+        assert_eq!(tr(ko, "Apply redactions"), "민감 정보 가리기 적용");
+        assert_eq!(tr(ko, "Clear redaction marks"), "민감 정보 가리기 표시 지우기");
         let warning = concat!(
             "You are about to apply 1 redaction mark. ",
             "Text, images and drawings under the marks, and comments ",
